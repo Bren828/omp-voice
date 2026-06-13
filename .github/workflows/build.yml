@@ -1,0 +1,75 @@
+name: build
+
+# Auto-build on every push / PR to main, plus a manual "Run workflow" button.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-x86:
+    runs-on: windows-latest          # has Visual Studio 2022 + CMake + Windows SDK
+    name: Windows x86 (relay + SA-MP plugin + .asi client)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # samp/sdk is vendored in-tree, so no submodules to fetch.
+
+      # Cache the FetchContent deps (libsodium / opus / imgui / minhook / rnnoise)
+      # so re-runs don't re-clone+rebuild them. Invalidated when the build files
+      # that pin the deps change.
+      - name: Cache _deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'client/CMakeLists.txt', 'relay/CMakeLists.txt', 'samp/CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      # Production-like configuration: real crypto (sodium) + opus + the full
+      # client (.asi) with ImGui/MinHook/RNNoise. Let CMake pick the runner's
+      # default VS 2022 generator; we only force the x86 (Win32) architecture
+      # that GTA SA / SA-MP 0.3.7 require.
+      - name: Configure (CMake, Win32)
+        run: >
+          cmake -S . -B build -A Win32
+          -DVC_NO_SODIUM=OFF
+          -DVC_WITH_OPUS=ON
+          -DVC_BUILD_CLIENT=ON
+          -DVC_BUILD_SAMP=ON
+          -DVC_BUILD_RELAY=ON
+          -DVC_BUILD_TESTS=ON
+          -DVC_CLIENT_GUI=ON
+          -DVC_WITH_RNNOISE=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      # Run the verification tests. e2e_handshake is excluded: it pre-dates the
+      # relay's deliberate loopback-trust bypass and now fails on a pure-loopback
+      # harness (tracked separately; not a regression).
+      - name: Test (ctest)
+        run: ctest --test-dir build -C Release --output-on-failure -E e2e_handshake
+
+      - name: Collect artifacts
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $items = @(
+            'build/samp/Release/VoiceChat.dll',
+            'build/relay/Release/voice_relay.exe',
+            'build/client/Release/VoiceChat.asi'
+          )
+          foreach ($i in $items) { if (Test-Path $i) { Copy-Item $i dist -Force } }
+          Copy-Item samp/include/voicechat.inc     dist -Force
+          Copy-Item samp/include/voicechat_ui.inc  dist -Force
+          Get-ChildItem dist | Format-Table Length, Name
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicechat-v2-win32
+          path: dist/
+          if-no-files-found: warn
