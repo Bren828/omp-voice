@@ -1,0 +1,47 @@
+# ── Build directories (CMake out-of-source + FetchContent _deps) ──
+/build-deploy/
+/build-stageb/
+build/
+build*/
+out/
+_deps/
+
+# ── CMake artifacts ──
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeUserPresets.json
+
+# ── MSVC / Visual Studio ──
+.vs/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# ── Compiled binaries / outputs (this repo is source-only) ──
+*.asi
+*.dll
+*.exe
+*.lib
+*.amx
+
+# ── Runtime logs the .asi/relay drop next to themselves ──
+VoiceChat.log
+VoiceChat_bootstrap.log
+*.bak-*
+
+# ── Claude local (personal) settings ──
+.claude/settings.local.json
+
+# ── OS / editor cruft ──
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*~
