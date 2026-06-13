@@ -15,6 +15,7 @@ panel.
 - [Repository layout](#repository-layout)
 - [Build](#build)
 - [Install / deploy](#install--deploy)
+- [Networking & ports](#networking--ports)
 - [Configuration](#configuration)
 - [Pawn API](#pawn-api)
 - [In-game controls (client)](#in-game-controls-client)
@@ -139,11 +140,23 @@ Key CMake options (defaults in brackets):
 > The client and SA-MP plugin must be **x86** (`-A Win32`); the relay and open.mp
 > component are x64. Build the pieces you need per configure — see [`docs/BUILD.md`](docs/BUILD.md).
 
-### CI
+### CI & Releases
 
 GitHub Actions ([`.github/workflows/build.yml`](.github/workflows/build.yml)) builds the
 **Windows x86** production stack and a **Linux x64** relay+core, runs the tests, and
 uploads the binaries as artifacts on every push/PR to `main`.
+
+Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which publishes a **GitHub Release** with ready-to-use bundles — `voicechat-client-win32.zip`,
+`voicechat-server-win.zip`, and `voicechat-relay-linux-x64.tar.gz` (each with an
+`INSTALL.txt`):
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Building on **Linux** (relay, 32-bit SA-MP `.so`, open.mp component): see
+[`docs/LINUX.md`](docs/LINUX.md).
 
 ## Install / deploy
 
@@ -158,6 +171,30 @@ uploads the binaries as artifacts on every push/PR to `main`.
 **Client** (each player's GTA SA folder):
 1. `VoiceChat.asi` (needs an ASI loader, e.g. SilentPatch/CLEO).
 2. `voicechat.ini` — set `relay_ip` to the server's IP (`127.0.0.1` if you host locally).
+
+## Networking & ports
+
+UDP only. Full details + firewall commands in [`docs/NETWORKING.md`](docs/NETWORKING.md).
+
+| Port (default) | Direction | Expose? |
+|----------------|-----------|---------|
+| **7779** audio   | client ⇄ relay (voice + handshake) | **YES — open inbound on the server** |
+| **7778** control | plugin → relay (loopback IPC) | No — keep local |
+| **7780** cmd     | server → client (token delivery) | Client side (LAN: automatic; internet: may need forward) |
+
+Open UDP 7779 on the server:
+
+```powershell
+# Windows (admin)
+netsh advfirewall firewall add rule name="VoiceChat 7779" dir=in action=allow protocol=UDP localport=7779
+```
+```bash
+# Linux
+sudo ufw allow 7779/udp
+```
+
+All ports are overridable: server in `voice.ini [network]`, client in
+`voicechat.ini [network]` (only `audio_port` must match on both sides).
 
 ## Configuration
 

@@ -1,0 +1,128 @@
+name: release
+
+# Cut a GitHub Release with ready-to-use bundles whenever a v* tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+# or run it manually from the Actions tab (provide the tag as input).
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write          # needed to create the Release
+
+jobs:
+  # ---- Windows: client (.asi) + server (.dll + relay.exe + includes) ----
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache _deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'client/CMakeLists.txt', 'relay/CMakeLists.txt', 'samp/CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+      - name: Configure (Win32, production)
+        run: >
+          cmake -S . -B build -A Win32
+          -DVC_NO_SODIUM=OFF -DVC_WITH_OPUS=ON
+          -DVC_BUILD_CLIENT=ON -DVC_BUILD_SAMP=ON -DVC_BUILD_RELAY=ON
+          -DVC_BUILD_TESTS=OFF -DVC_CLIENT_GUI=ON -DVC_WITH_RNNOISE=ON
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+      - name: Package bundles
+        shell: pwsh
+        run: |
+          $client = 'staging/voicechat-client-win32'
+          $server = 'staging/voicechat-server-win'
+          New-Item -ItemType Directory -Force $client, $server | Out-Null
+
+          # Client bundle: drop next to gta_sa.exe (needs an ASI loader).
+          Copy-Item build/client/Release/VoiceChat.asi $client
+          Copy-Item client/voicechat.ini               $client
+          @"
+          VoiceChat v2 - CLIENT
+          1. Put VoiceChat.asi in your GTA SA folder (needs an ASI loader: SilentPatch/CLEO).
+          2. Edit voicechat.ini -> [network] relay_ip = <server IP> (127.0.0.1 if you host locally).
+          3. Join the server. INSERT opens the settings panel; hold B (proximity) / N (radio).
+          "@ | Set-Content "$client/INSTALL.txt"
+
+          # Server bundle (SA-MP / open.mp on Windows).
+          Copy-Item build/samp/Release/VoiceChat.dll   $server
+          Copy-Item build/relay/Release/voice_relay.exe $server
+          Copy-Item samp/include/voicechat.inc         $server
+          Copy-Item samp/include/voicechat_ui.inc      $server
+          Copy-Item voice.ini                          $server
+          @"
+          VoiceChat v2 - SERVER (Windows)
+          1. plugins/VoiceChat.dll   (SA-MP)  -> add "VoiceChat" to legacy_plugins/server.cfg
+          2. components/voice_relay.exe        (the plugin auto-launches + supervises it)
+          3. qawno|pawno/include/voicechat.inc (+ voicechat_ui.inc) to compile your gamemode
+          4. voice.ini next to the server executable
+          5. Open inbound UDP 7779 (audio). See docs/NETWORKING.md.
+          "@ | Set-Content "$server/INSTALL.txt"
+
+          Compress-Archive -Path "$client/*" -DestinationPath voicechat-client-win32.zip -Force
+          Compress-Archive -Path "$server/*" -DestinationPath voicechat-server-win.zip   -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundles-win
+          path: |
+            voicechat-client-win32.zip
+            voicechat-server-win.zip
+
+  # ---- Linux: standalone relay (x64 ELF) ----
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (x64, relay)
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DVC_NO_SODIUM=OFF -DVC_WITH_OPUS=ON
+          -DVC_BUILD_RELAY=ON -DVC_BUILD_SAMP=OFF -DVC_BUILD_CLIENT=OFF -DVC_BUILD_TESTS=OFF
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+      - name: Package relay
+        run: |
+          mkdir -p staging/relay
+          cp build/relay/voice_relay staging/relay/
+          cp voice.ini staging/relay/
+          cat > staging/relay/INSTALL.txt <<'EOF'
+          VoiceChat v2 - RELAY (Linux x64, standalone)
+          The SA-MP plugin / open.mp component normally launches the relay for you. To run
+          it standalone: place voice.ini beside ./voice_relay and run it. Open inbound UDP
+          7779. The SA-MP plugin (.so, 32-bit) / open.mp component must be built from
+          source - see docs/LINUX.md.
+          EOF
+          tar -czf voicechat-relay-linux-x64.tar.gz -C staging/relay .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-linux
+          path: voicechat-relay-linux-x64.tar.gz
+
+  # ---- Create the GitHub Release with all bundles attached ----
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dl
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "Releasing $TAG"
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "VoiceChat v2 $TAG" \
+            --generate-notes \
+            dl/bundles-win/*.zip dl/bundle-linux/*.tar.gz
