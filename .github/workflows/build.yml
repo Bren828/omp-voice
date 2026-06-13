@@ -73,3 +73,47 @@ jobs:
           name: voicechat-v2-win32
           path: dist/
           if-no-files-found: warn
+
+  linux-x64:
+    runs-on: ubuntu-latest
+    name: Linux x64 (relay + core + tests)
+    # The client (.asi) is Windows-only and the SA-MP plugin is 32-bit, so the
+    # Linux job is the portability gate for the platform-free core + the relay
+    # (a standalone x64 process) + the verification tests on GCC. Deps are still
+    # built from source via FetchContent, so no apt packages are needed.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache _deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'relay/CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Configure (CMake, x64)
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DVC_NO_SODIUM=OFF
+          -DVC_WITH_OPUS=ON
+          -DVC_BUILD_RELAY=ON
+          -DVC_BUILD_SAMP=OFF
+          -DVC_BUILD_CLIENT=OFF
+          -DVC_BUILD_OMP=OFF
+          -DVC_BUILD_TESTS=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Test (ctest)
+        run: ctest --test-dir build -C Release --output-on-failure -E e2e_handshake
+
+      - name: Upload relay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicechat-v2-linux-x64
+          path: build/relay/voice_relay
+          if-no-files-found: warn
