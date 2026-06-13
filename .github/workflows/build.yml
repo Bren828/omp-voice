@@ -66,7 +66,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: voicechat-v2-win32
+          name: omp-voice-win32
           path: dist/
           if-no-files-found: warn
 
@@ -81,12 +81,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cache _deps
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'relay/CMakeLists.txt') }}
-          restore-keys: deps-${{ runner.os }}-
+      # No _deps cache here either: FetchContent sub-builds bake in the absolute
+      # workspace path, so a cache saved before the repo was renamed (or moved)
+      # fails configure ("CMakeCache.txt directory is different"). Always rebuild.
 
       - name: Configure (CMake, x64)
         run: >
