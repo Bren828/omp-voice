@@ -1,11 +1,18 @@
-# VoiceChat v2
+# omp-voice
 
-Proximity + radio/phone **voice chat** for **SA-MP 0.3.7 R5** and **open.mp**, with a
-Windows `.asi` client. Server-authoritative positioning, cryptographic-token identity,
-end-to-end AEAD-encrypted audio, neural noise suppression, and an in-game ImGui control
-panel.
+**VoiceChat v2** — proximity + radio/phone **voice chat** for **open.mp** and
+**SA-MP 0.3.7 R5**, with a Windows `.asi` client. Server-authoritative positioning,
+cryptographic-token identity, end-to-end AEAD-encrypted audio, neural noise suppression,
+and an in-game ImGui control panel.
 
-[![build](https://github.com/staark-dev/voicechat-v2/actions/workflows/build.yml/badge.svg)](https://github.com/staark-dev/voicechat-v2/actions/workflows/build.yml)
+[![build](https://github.com/staark-dev/omp-voice/actions/workflows/build.yml/badge.svg)](https://github.com/staark-dev/omp-voice/actions/workflows/build.yml)
+[![release](https://github.com/staark-dev/omp-voice/actions/workflows/release.yml/badge.svg)](https://github.com/staark-dev/omp-voice/actions/workflows/release.yml)
+[![latest release](https://img.shields.io/github/v/release/staark-dev/omp-voice?include_prereleases&sort=semver)](https://github.com/staark-dev/omp-voice/releases)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![open.mp](https://img.shields.io/badge/open.mp-component-1f6feb)](https://open.mp/)
+[![SA-MP](https://img.shields.io/badge/SA--MP-0.3.7%20R5-f59f00)](https://www.sa-mp.mp/)
+[![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C)](#)
+[![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)](#)
 
 ---
 

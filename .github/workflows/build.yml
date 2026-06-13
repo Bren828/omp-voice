@@ -16,15 +16,11 @@ jobs:
         uses: actions/checkout@v4
         # samp/sdk is vendored in-tree, so no submodules to fetch.
 
-      # Cache the FetchContent deps (libsodium / opus / imgui / minhook / rnnoise)
-      # so re-runs don't re-clone+rebuild them. Invalidated when the build files
-      # that pin the deps change.
-      - name: Cache _deps
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'client/CMakeLists.txt', 'relay/CMakeLists.txt', 'samp/CMakeLists.txt') }}
-          restore-keys: deps-${{ runner.os }}-
+      # NB: we deliberately do NOT cache build/_deps on Windows. The cached
+      # FetchContent sub-builds bake in the VS generator, so when the hosted
+      # runner image swaps its Visual Studio version the restored cache fails
+      # configure ("generator does not match the generator used previously").
+      # Rebuilding the deps each run is slower but never breaks.
 
       # Production-like configuration: real crypto (sodium) + opus + the full
       # client (.asi) with ImGui/MinHook/RNNoise. Let CMake pick the runner's

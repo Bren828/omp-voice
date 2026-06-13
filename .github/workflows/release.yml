@@ -21,12 +21,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Cache _deps
-        uses: actions/cache@v4
-        with:
-          path: build/_deps
-          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt', 'client/CMakeLists.txt', 'relay/CMakeLists.txt', 'samp/CMakeLists.txt') }}
-          restore-keys: deps-${{ runner.os }}-
+      # No _deps cache: a cached sub-build bakes in the VS generator and breaks
+      # configure when the runner image changes its Visual Studio version.
       - name: Configure (Win32, production)
         run: >
           cmake -S . -B build -A Win32
