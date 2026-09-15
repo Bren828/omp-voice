@@ -119,6 +119,7 @@ static void applyTheme()
     c[ImGuiCol_Header] = ImVec4(0.20f, 0.30f, 0.45f, 1.00f);
     c[ImGuiCol_HeaderHovered] = accentD;
     c[ImGuiCol_HeaderActive] = accent;
+    c[ImGuiCol_Border] = ImVec4(0.26f, 0.31f, 0.40f, 1.00f);
     c[ImGuiCol_Border] = ImVec4(0.26f, 0.31f, 0.40f, 0.60f);
 }
 
@@ -223,7 +224,15 @@ static HRESULT __stdcall hookedEndScene(IDirect3DDevice9* dev)
     if (s_resetInProgress.load()) return s_origEndScene(dev);
 
     ensureImGui(dev);
-    if (!s_imguiReady || s_imguiObjectsInvalidated) return s_origEndScene(dev);
+    if (!s_imguiReady) return s_origEndScene(dev);
+
+    // Device objects are recreated here, outside GTA's Reset call. This avoids
+    // doing ImGui resource creation while the game is changing the D3D device.
+    if (s_imguiObjectsInvalidated) {
+        printf("[gui] recreating ImGui DX9 objects after Reset\n");
+        ImGui_ImplDX9_CreateDeviceObjects();
+        s_imguiObjectsInvalidated = false;
+    }
 
     overlay::setRenderMode(true);
 
@@ -283,8 +292,6 @@ static HRESULT __stdcall hookedEndScene(IDirect3DDevice9* dev)
 
 static HRESULT __stdcall hookedReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp)
 {
-    // GTA SA can call Reset as part of minimize/restore and mode changes.
-    // Do not let a half-rendered ImGui frame survive across the device reset.
     const bool wasReady = s_imguiReady;
     s_resetInProgress.store(true);
     s_panelOpen.store(false);
@@ -304,11 +311,9 @@ static HRESULT __stdcall hookedReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETER
     HRESULT hr = s_origReset(dev, pp);
     printf("[gui] Reset result hr=0x%08lX\n", (unsigned long)hr);
 
-    if (wasReady && SUCCEEDED(hr)) {
-        ImGui_ImplDX9_CreateDeviceObjects();
-        s_imguiObjectsInvalidated = false;
-    }
-
+    // Do not call CreateDeviceObjects() from inside Reset. GTA may still be in
+    // the middle of its device/window transition. EndScene will recreate them
+    // on the first safe frame after a successful Reset.
     s_resetInProgress.store(false);
     printf("[gui] Reset end\n");
     return hr;
