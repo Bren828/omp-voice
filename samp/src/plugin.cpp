@@ -60,7 +60,10 @@ static void deliverToken(uint16_t pid, const crypto::Token& tok)
     std::memcpy(buf + 2, &pid, 2);
     std::memcpy(buf + 4, tok.data(), TOKEN_BYTES);
     auto to = UdpSocket::addr(it->second.c_str(), DEFAULT_PORT_CMD);
-    g_cmdSock.sendTo(buf, sizeof(buf), to);
+    int sent = g_cmdSock.sendTo(buf, sizeof(buf), to);
+    logprintf("[VoiceChat] token player=%u -> %s:%u send=%d/%u",
+              pid, it->second.c_str(), (unsigned)DEFAULT_PORT_CMD,
+              sent, (unsigned)sizeof(buf));
 }
 
 // ── Pawn callback dispatch (req. B / G1) ─────────────────────
@@ -189,8 +192,7 @@ static cell AMX_NATIVE_CALL n_MutePlayer(AMX*, cell* p)
 {   // Voice_MutePlayer(playerid, targetid, bool:mute = true)
     bool on = (p[0] >= (cell)(3 * sizeof(cell))) ? (p[3] != 0) : true;
     g_link.mutePlayer((uint16_t)p[1], (uint16_t)p[2], on);
-    return 1;
-}
+    return 1; }
 
 // Speakerphone (J6): broadcast a player's received call audio into their
 // proximity so nearby players hear it. Optional 2nd arg toggles on/off.
@@ -198,8 +200,7 @@ static cell AMX_NATIVE_CALL n_SetSpeakerphone(AMX*, cell* p)
 {   // Voice_SetSpeakerphone(playerid, bool:on = true)
     bool on = (p[0] >= (cell)(2 * sizeof(cell))) ? (p[2] != 0) : true;
     g_link.setSpeakerphone((uint16_t)p[1], on);
-    return 1;
-}
+    return 1; }
 
 // --- lifecycle (req. A, J8) ---
 // Voice_OnPlayerConnect(playerid, const ip[]) — atomic mint + deliver + bind.
@@ -211,6 +212,7 @@ static cell AMX_NATIVE_CALL n_OnPlayerConnect(AMX* amx, cell* p)
     std::string ip = amxStr(amx, p[2]);
     g_playerIp[pid] = ip;                                  // for token delivery
     unsigned long ipn = inet_addr(ip.c_str());             // network order
+    logprintf("[VoiceChat] Voice_OnPlayerConnect pid=%u ip=%s", pid, ip.c_str());
     g_link.onPlayerConnect(pid, ipn == INADDR_NONE ? 0u : (uint32_t)ipn);
     return 1;
 }
@@ -219,7 +221,6 @@ static cell AMX_NATIVE_CALL n_OnPlayerDisconnect(AMX*, cell* p)
 static cell AMX_NATIVE_CALL n_RegisterPlayerIp(AMX* amx, cell* p)
 {   g_playerIp[(uint16_t)p[1]] = amxStr(amx, p[2]); return 1; }
 
-// Stage H: re-read voice.ini and re-push it to the relay at runtime.
 static cell AMX_NATIVE_CALL n_ReloadConfig(AMX*, cell*)
 {   pushVoiceConfig(); return 1; }
 
@@ -254,7 +255,6 @@ static AMX_NATIVE_INFO kNatives[] = {
 // ============================================================
 PLUGIN_EXPORT unsigned int PLUGIN_CALL Supports()
 {
-    // PROCESS_TICK: drives the relay->gamemode callback pump on the main thread.
     return SUPPORTS_VERSION | SUPPORTS_AMX_NATIVES | SUPPORTS_PROCESS_TICK;
 }
 
@@ -270,22 +270,18 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData)
     if (!crypto::init()) { logprintf("[VoiceChat] libsodium init FAILED"); return false; }
 
     g_cmdSock.open();
-    if (!g_link.init("127.0.0.1", DEFAULT_PORT_CONTROL))
+
+    // The relay's control port is configured in the SAME voice.ini that the
+    // relay reads. Do not use DEFAULT_PORT_CONTROL blindly: voice.ini may
+    // override it (e.g. 7788 instead of the historical default 7778).
+    RelayConfig relayCfg = RelayConfig::load("voice.ini");
+    logprintf("[VoiceChat] control IPC target=127.0.0.1:%u audio=%u",
+              (unsigned)relayCfg.controlPort, (unsigned)relayCfg.audioPort);
+    if (!g_link.init("127.0.0.1", relayCfg.controlPort))
         logprintf("[VoiceChat] WARNING: control link to relay failed");
     g_link.setTokenDeliver(deliverToken);
 
-    // Stage H: voice.ini's gameplay policy is pushed to the relay from the FIRST
-    // ProcessTick after a short delay (see ProcessTick) — not here — so the relay
-    // (launched just below, asynchronously) has had time to boot and bind before
-    // the CtrlConfig UDP packet arrives. The relay's own boot read is the
-    // fallback if the packet is ever lost.
-
 #ifdef VC_SAMP_RAKNET
-    // Opt-in hardening (req. A): SA-MP hands the plugin the RakServer interface,
-    // so the token can ride the game's already-encrypted session instead of the
-    // cmd-UDP side channel. We acquire it here; the Send call + client receive
-    // hook are completed per samp/raknet/README.md. cmd-UDP stays the active
-    // deliverer until that lands, so token delivery keeps working.
     using GetRakServerFn = void* (*)();
     auto getRak = reinterpret_cast<GetRakServerFn>(ppData[PLUGIN_DATA_RAKSERVER]);
     if (getRak && getRak())
@@ -293,7 +289,7 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData)
                   "(complete token delivery per samp/raknet/README.md)");
 #endif
 
-    relay::launch();   // watchdog auto-restart (B1)
+    relay::launch();
     logprintf("[VoiceChat] loaded.");
     return true;
 }
@@ -306,13 +302,8 @@ PLUGIN_EXPORT void PLUGIN_CALL Unload()
     logprintf("[VoiceChat] unloaded.");
 }
 
-// Pumped by the server on the main thread (~every server frame). Drains the
-// relay's status queue and fires the matching Pawn callbacks (req. B / G1).
 PLUGIN_EXPORT void PLUGIN_CALL ProcessTick()
 {
-    // Stage H one-shot: push voice.ini's policy once the relay has had time to
-    // boot+bind (it's launched asynchronously in Load). steady_clock keeps this
-    // portable (SA-MP also builds on Linux). Runtime edits use Voice_ReloadConfig.
     static const auto s_loadAt = std::chrono::steady_clock::now();
     static bool s_configPushed = false;
     if (!s_configPushed &&
@@ -332,7 +323,7 @@ PLUGIN_EXPORT void PLUGIN_CALL ProcessTick()
             firePublic3("OnPlayerRadioKey", (cell)ev.playerId,
                         (cell)ev.channelId, (cell)ev.flag); break;
         case StatusType::SessionTimeout:
-            remintToken(ev.playerId); break;     // drive client reconnect (B2)
+            remintToken(ev.playerId); break;
         }
     }
 }
