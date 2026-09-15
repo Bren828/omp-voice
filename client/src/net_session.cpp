@@ -18,21 +18,92 @@ static uint32_t nowMs()
 // ── TokenInbox ──────────────────────────────────────────────
 bool TokenInbox::start(uint16_t cmdPort)
 {
-    if (!m_sock.open() || !m_sock.bindAny(cmdPort)) return false;
+    std::printf("[token] start: opening UDP socket port=%u\n",
+                (unsigned)cmdPort);
+
+    if (!m_sock.open()) {
+        std::printf("[token] !!! socket OPEN FAILED !!!\n");
+        return false;
+    }
+
+    if (!m_sock.bindAny(cmdPort)) {
+        std::printf("[token] !!! bind FAILED port=%u !!!\n",
+                    (unsigned)cmdPort);
+        return false;
+    }
+
     m_sock.setRecvTimeout(200);
+
+    std::printf("[token] socket bound 0.0.0.0:%u\n",
+                (unsigned)cmdPort);
+
     m_run = true;
+
     m_thr = std::thread([this] {
-        uint8_t buf[64]; sockaddr_in from{};
+        uint8_t buf[64];
+        sockaddr_in from{};
+
+        std::printf("[token] receiver thread started\n");
+
         while (m_run) {
             int n = m_sock.recvFrom(buf, sizeof(buf), from);
-            if (n < (int)(4 + TOKEN_BYTES)) continue;
-            if (buf[0] != 'T' || buf[1] != 'K') continue;
-            std::lock_guard<std::mutex> lk(m_mtx);
-            std::memcpy(&m_pid, buf + 2, 2);
-            std::memcpy(m_tok.data(), buf + 4, TOKEN_BYTES);
-            m_have = true;
+
+            if (n <= 0)
+                continue;
+
+            char fromIp[INET_ADDRSTRLEN]{};
+            inet_ntop(AF_INET, &from.sin_addr,
+                      fromIp, sizeof(fromIp));
+
+            std::printf(
+                "[token] RX from=%s:%u len=%d first=%02X %02X\n",
+                fromIp,
+                (unsigned)ntohs(from.sin_port),
+                n,
+                n > 0 ? buf[0] : 0,
+                n > 1 ? buf[1] : 0
+            );
+
+            if (n < (int)(4 + TOKEN_BYTES)) {
+                std::printf(
+                    "[token] DROP: packet too small (%d, expected >= %d)\n",
+                    n,
+                    (int)(4 + TOKEN_BYTES)
+                );
+                continue;
+            }
+
+            if (buf[0] != 'T' || buf[1] != 'K') {
+                std::printf(
+                    "[token] DROP: invalid magic %02X %02X, expected 54 4B\n",
+                    buf[0],
+                    buf[1]
+                );
+                continue;
+            }
+
+            uint16_t pid = 0;
+            std::memcpy(&pid, buf + 2, sizeof(pid));
+
+            {
+                std::lock_guard<std::mutex> lk(m_mtx);
+
+                std::memcpy(&m_pid, buf + 2, 2);
+                std::memcpy(m_tok.data(), buf + 4, TOKEN_BYTES);
+
+                m_have = true;
+            }
+
+            std::printf(
+                "[token] !!! TOKEN ACCEPTED player=%u len=%d !!!\n",
+                (unsigned)pid,
+                n
+            );
         }
+
+        std::printf("[token] receiver thread stopped\n");
     });
+
     return true;
 }
 
@@ -75,9 +146,6 @@ bool Session::connect(const char* relayIp, uint16_t audioPort,
                 (unsigned)ntohs(m_server.sin_port));
 
     m_self = crypto::generateKeyPair();
-    // Fresh ephemeral key => fresh AEAD session; restart the nonce counter so
-    // each session's (key,counter) space starts clean. Safe because the key is
-    // never reused across handshakes.
     m_tx = 1;
 
     HandshakeReq req{};
@@ -94,8 +162,6 @@ bool Session::connect(const char* relayIp, uint16_t audioPort,
     m_run = true;
     m_established = false;
     m_nak = false;
-    // Reuse the recv thread/socket across reconnects: it already watches for
-    // the handshake reply when !established, so we just (re)send the request.
     if (!m_recv.joinable()) {
         std::printf("[net] recv thread start\n");
         m_recv = std::thread([this] { recvLoop(); });
@@ -108,8 +174,6 @@ bool Session::connect(const char* relayIp, uint16_t audioPort,
         return false;
     }
 
-    // Wait briefly for the ack — or bail early if the relay NAKs (e.g. a stale
-    // token during reconnect), so the manager can retry with a fresh one.
     uint32_t start = nowMs();
     while (!m_established && !m_nak && nowMs() - start < 2000)
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -208,7 +272,6 @@ void Session::recvLoop()
             continue;
         }
 
-        // Established: AEAD-open then dispatch.
         uint8_t plain[AUDIO_MTU + 64];
         size_t pn = crypto::open(m_keys, m_rxLastSeen, buf, (size_t)n, plain, sizeof(plain));
         if (pn < 1) continue;
@@ -241,7 +304,7 @@ void Session::recvLoop()
         case PktType::PlayerName: {
             if (pn < sizeof(PlayerNameDown)) break;
             PlayerNameDown nm; std::memcpy(&nm, plain, sizeof(nm));
-            nm.name[MAX_NAME_LEN - 1] = '\0';            // guard truncated names
+            nm.name[MAX_NAME_LEN - 1] = '\0';
             if (m_hooks.onName) m_hooks.onName(nm.playerId, nm.name);
             break;
         }
@@ -254,14 +317,11 @@ void Session::tick()
 {
     if (!m_established) return;
     uint32_t t = nowMs();
-    // Heartbeat (req. B3).
     if (t - m_lastPing > 3000) {
         m_lastPing = t;
         PingPong p{ (uint8_t)PktType::Ping, m_limits.playerId, t };
         sendSealed((uint8_t*)&p, sizeof(p));
     }
-    // Rx timeout -> drop session so the caller re-requests a token and
-    // reconnects (req. B2 auto-reconnect with fresh token).
     if (m_lastRx && t - m_lastRx > 8000)
         m_established = false;
 }
