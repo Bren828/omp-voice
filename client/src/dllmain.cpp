@@ -196,6 +196,11 @@ static void run()
     g_cfg = ClientConfig::load("voicechat.ini");
     printf("[VoiceChat v2] ClientConfig::load done\n");
     printf("[VoiceChat v2] relay=%s:%d cmd=%d\n", g_cfg.relayIp.c_str(), g_cfg.audioPort, g_cfg.cmdPort);
+#ifdef VC_CLIENT_GUI
+    printf("[gui] panel_key=%d (0x%02X)\n", g_cfg.panelKey, (unsigned)(g_cfg.panelKey & 0xFF));
+#else
+    printf("[gui] control panel build is DISABLED (VC_CLIENT_GUI not defined)\n");
+#endif
 
     printf("[audio] playback init begin\n");
     g_playback.init(g_cfg.masterVolume, g_cfg.proximityVolume, g_cfg.radioVolume);
@@ -256,7 +261,12 @@ static void run()
             installD3D9WithDiagnostics();
 
         bool panelNow = g_cfg.panelKey && (GetAsyncKeyState(g_cfg.panelKey) & 0x8000);
-        if (panelNow && !lastPanel && d3d9::installed()) d3d9::togglePanel();
+        if (panelNow && !lastPanel) {
+            d3d9::togglePanel();
+            printf("[gui] panel key pressed: vk=%d installed=%d open=%d\n",
+                   g_cfg.panelKey, d3d9::installed() ? 1 : 0,
+                   d3d9::panelOpen() ? 1 : 0);
+        }
         lastPanel = panelNow;
 
         if (panel::pttRebindActive()) {
@@ -324,17 +334,25 @@ BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID)
             printf("[VoiceChat v2] CreateThread OK: handle=%p\n", (void*)g_thread);
         }
     } else if (reason == DLL_PROCESS_DETACH) {
-        if (!g_instanceMutex) return TRUE;
+        printf("[VoiceChat v2] DllMain detach\n");
         g_run = false;
 #ifdef VC_CLIENT_GUI
         d3d9::shutdown();
 #endif
-        g_capture.shutdown();
         g_voice.stop();
-        g_playback.shutdown();
+        g_capture.stop();
+        g_playback.stop();
         overlay::shutdown();
-        if (g_thread) { WaitForSingleObject(g_thread, 3000); CloseHandle(g_thread); }
-        if (g_instanceMutex) { CloseHandle(g_instanceMutex); g_instanceMutex = nullptr; }
+        if (g_thread) {
+            WaitForSingleObject(g_thread, 1000);
+            CloseHandle(g_thread);
+            g_thread = nullptr;
+        }
+        if (g_instanceMutex) {
+            ReleaseMutex(g_instanceMutex);
+            CloseHandle(g_instanceMutex);
+            g_instanceMutex = nullptr;
+        }
     }
     return TRUE;
 }
