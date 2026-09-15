@@ -1,0 +1,90 @@
+name: build-server
+
+on:
+  push:
+    branches: [ Test ]
+  pull_request:
+    branches: [ Test ]
+  workflow_dispatch:
+
+jobs:
+  windows-x86-server:
+    runs-on: windows-latest
+    name: Windows x86 server (SA-MP plugin + relay)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (CMake, Win32)
+        run: >
+          cmake -S . -B build-server-win32 -A Win32
+          -DVC_NO_SODIUM=OFF
+          -DVC_WITH_OPUS=ON
+          -DVC_BUILD_CLIENT=OFF
+          -DVC_BUILD_SAMP=ON
+          -DVC_BUILD_RELAY=ON
+          -DVC_BUILD_OMP=OFF
+          -DVC_BUILD_TESTS=ON
+
+      - name: Build server (Release)
+        run: cmake --build build-server-win32 --config Release --parallel
+
+      - name: Test (ctest)
+        run: ctest --test-dir build-server-win32 -C Release --output-on-failure -E e2e_handshake
+
+      - name: Collect Windows server artifacts
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist-server | Out-Null
+          $items = @(
+            'build-server-win32/samp/Release/VoiceChat.dll',
+            'build-server-win32/relay/Release/voice_relay.exe'
+          )
+          foreach ($i in $items) {
+            if (Test-Path $i) { Copy-Item $i dist-server -Force }
+          }
+          Copy-Item samp/include/voicechat.inc dist-server/voicechat.inc -Force
+          Copy-Item samp/include/voicechat_ui.inc dist-server/voicechat_ui.inc -Force
+          Get-ChildItem dist-server | Format-Table Length, Name
+
+      - name: Upload Windows server
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicechat-server-win32
+          path: dist-server/
+          if-no-files-found: warn
+
+  linux-x64-relay:
+    runs-on: ubuntu-latest
+    name: Linux x64 relay
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (CMake, x64)
+        run: >
+          cmake -S . -B build-server-linux
+          -DCMAKE_BUILD_TYPE=Release
+          -DVC_NO_SODIUM=OFF
+          -DVC_WITH_OPUS=ON
+          -DVC_BUILD_RELAY=ON
+          -DVC_BUILD_SAMP=OFF
+          -DVC_BUILD_CLIENT=OFF
+          -DVC_BUILD_OMP=OFF
+          -DVC_BUILD_TESTS=ON
+
+      - name: Build relay (Release)
+        run: cmake --build build-server-linux --config Release --parallel
+
+      - name: Test (ctest)
+        run: ctest --test-dir build-server-linux -C Release --output-on-failure -E e2e_handshake
+
+      - name: Upload Linux relay
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voicechat-server-linux-x64
+          path: build-server-linux/relay/voice_relay
+          if-no-files-found: warn
