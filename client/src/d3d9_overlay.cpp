@@ -276,8 +276,8 @@ static HRESULT __stdcall hookedEndScene(IDirect3DDevice9* dev)
     return s_origEndScene(dev);
 }
 
-// Diagnostic build: Reset hook intentionally disabled. GTA owns Reset during
-// window resize; this lets us isolate whether our Reset detour causes the freeze.
+// Diagnostic build: Reset and DirectInput hooks are intentionally disabled.
+// GTA owns Reset and mouse input during the resize test.
 using DIGetDeviceState_t = HRESULT(__stdcall*)(IDirectInputDevice8A*, DWORD, LPVOID);
 using DIGetDeviceData_t = HRESULT(__stdcall*)(IDirectInputDevice8A*, DWORD,
                                                LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
@@ -432,8 +432,7 @@ bool install()
     }
 
     printf("[gui] D3D9 Reset hook DISABLED for diagnostic test (Reset=%p)\n", resetAddr);
-
-    hookDInputMouse();
+    printf("[gui] DirectInput mouse hooks DISABLED for diagnostic test\n");
 
     MH_STATUS en = MH_EnableHook(MH_ALL_HOOKS);
     if (en != MH_OK) {
@@ -442,7 +441,7 @@ bool install()
     }
 
     s_installed = true;
-    printf("[gui] D3D9 hooks installed (EndScene=%p Reset=DISABLED)\n", endSceneAddr);
+    printf("[gui] D3D9 hooks installed (EndScene=%p Reset=DISABLED DirectInput=DISABLED)\n", endSceneAddr);
     return true;
 }
 
