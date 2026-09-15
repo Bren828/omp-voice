@@ -23,7 +23,7 @@
 #include "../include/voice_panel.h"
 #include "../include/overlay.h"
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+extern IMGUI_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 
 namespace vc::client::d3d9 {
 
@@ -39,9 +39,6 @@ static bool s_imguiReady = false;
 static std::atomic<bool> s_panelOpen{ false };
 static bool s_lastOpen = false;
 
-// Reset can happen while GTA changes display/window state. Do not render ImGui
-// while the D3D device is inside Reset, and keep the backend resource state
-// explicit so a failed Reset cannot leave us pretending that resources exist.
 static std::atomic<bool> s_resetInProgress{ false };
 static bool s_imguiObjectsInvalidated = false;
 
@@ -119,7 +116,6 @@ static void applyTheme()
     c[ImGuiCol_Header] = ImVec4(0.20f, 0.30f, 0.45f, 1.00f);
     c[ImGuiCol_HeaderHovered] = accentD;
     c[ImGuiCol_HeaderActive] = accent;
-    c[ImGuiCol_Border] = ImVec4(0.26f, 0.31f, 0.40f, 1.00f);
     c[ImGuiCol_Border] = ImVec4(0.26f, 0.31f, 0.40f, 0.60f);
 }
 
@@ -221,18 +217,8 @@ static HRESULT __stdcall hookedEndScene(IDirect3DDevice9* dev)
         printf("[gui] EndScene hook firing (dev=%p)\n", (void*)dev);
     }
 
-    if (s_resetInProgress.load()) return s_origEndScene(dev);
-
     ensureImGui(dev);
     if (!s_imguiReady) return s_origEndScene(dev);
-
-    // Device objects are recreated here, outside GTA's Reset call. This avoids
-    // doing ImGui resource creation while the game is changing the D3D device.
-    if (s_imguiObjectsInvalidated) {
-        printf("[gui] recreating ImGui DX9 objects after Reset\n");
-        ImGui_ImplDX9_CreateDeviceObjects();
-        s_imguiObjectsInvalidated = false;
-    }
 
     overlay::setRenderMode(true);
 
@@ -290,35 +276,8 @@ static HRESULT __stdcall hookedEndScene(IDirect3DDevice9* dev)
     return s_origEndScene(dev);
 }
 
-static HRESULT __stdcall hookedReset(IDirect3DDevice9* dev, D3DPRESENT_PARAMETERS* pp)
-{
-    const bool wasReady = s_imguiReady;
-    s_resetInProgress.store(true);
-    s_panelOpen.store(false);
-    s_lastOpen = false;
-    s_centerCursor = false;
-    s_dx.store(0);
-    s_dy.store(0);
-    s_dz.store(0);
-
-    printf("[gui] Reset begin dev=%p pp=%p\n", (void*)dev, (void*)pp);
-
-    if (wasReady && !s_imguiObjectsInvalidated) {
-        ImGui_ImplDX9_InvalidateDeviceObjects();
-        s_imguiObjectsInvalidated = true;
-    }
-
-    HRESULT hr = s_origReset(dev, pp);
-    printf("[gui] Reset result hr=0x%08lX\n", (unsigned long)hr);
-
-    // Do not call CreateDeviceObjects() from inside Reset. GTA may still be in
-    // the middle of its device/window transition. EndScene will recreate them
-    // on the first safe frame after a successful Reset.
-    s_resetInProgress.store(false);
-    printf("[gui] Reset end\n");
-    return hr;
-}
-
+// Diagnostic build: Reset hook intentionally disabled. GTA owns Reset during
+// window resize; this lets us isolate whether our Reset detour causes the freeze.
 using DIGetDeviceState_t = HRESULT(__stdcall*)(IDirectInputDevice8A*, DWORD, LPVOID);
 using DIGetDeviceData_t = HRESULT(__stdcall*)(IDirectInputDevice8A*, DWORD,
                                                LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
@@ -472,10 +431,7 @@ bool install()
         return false;
     }
 
-    MH_STATUS rs = MH_CreateHook(resetAddr, &hookedReset,
-                                 reinterpret_cast<void**>(&s_origReset));
-    if (rs != MH_OK)
-        printf("[gui] MH_CreateHook(Reset) -> %d\n", (int)rs);
+    printf("[gui] D3D9 Reset hook DISABLED for diagnostic test (Reset=%p)\n", resetAddr);
 
     hookDInputMouse();
 
@@ -486,7 +442,7 @@ bool install()
     }
 
     s_installed = true;
-    printf("[gui] D3D9 hooks installed (EndScene=%p Reset=%p)\n", endSceneAddr, resetAddr);
+    printf("[gui] D3D9 hooks installed (EndScene=%p Reset=DISABLED)\n", endSceneAddr);
     return true;
 }
 
