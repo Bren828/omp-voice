@@ -7,12 +7,25 @@
 #include <iostream>
 #include <chrono>
 #include <algorithm>
+#include <iomanip>
 
 namespace vc {
 
 static uint64_t packAddr(const sockaddr_in& a)
 {
     return (uint64_t(a.sin_addr.s_addr) << 16) | a.sin_port;
+}
+
+static void logPacketHeader(const char* plane, const sockaddr_in& from, int len, const uint8_t* buf)
+{
+    std::cout << "[relay][" << plane << "] RX from="
+              << inet_ntoa(from.sin_addr) << ":" << ntohs(from.sin_port)
+              << " len=" << len;
+    if (len > 0) {
+        std::cout << " type=0x" << std::hex << std::setw(2) << std::setfill('0')
+                  << (unsigned)buf[0] << std::dec << std::setfill(' ');
+    }
+    std::cout << "\n";
 }
 
 bool Relay::init(const RelayConfig& cfg)
@@ -82,6 +95,8 @@ void Relay::controlLoop()
         int n = m_control.recvFrom(buf, sizeof(buf), from);
         if (n <= 0) continue;
 
+        logPacketHeader("control", from, n, buf);
+
         std::lock_guard<std::mutex> lk(m_mtx);
         m_bridgeAddr = from; m_haveBridge = true;
 
@@ -97,7 +112,7 @@ void Relay::controlLoop()
                 m_pending.end());
             m_pending.push_back(pt);
 
-            std::cout << "[relay] CtrlBindToken received player=" << b.playerId
+            std::cout << "[relay][token] STORED player=" << b.playerId
                       << " expires=" << b.expiresUnix
                       << " expected_ip=" << b.ip
                       << " pending=" << m_pending.size() << "\n";
@@ -128,9 +143,18 @@ void Relay::audioLoop()
         int n = m_audio.recvFrom(buf, sizeof(buf), from);
         if (n <= 0) continue;
 
-        std::lock_guard<std::mutex> lk(m_mtx);
         uint64_t key = packAddr(from);
         auto it = m_addrIndex.find(key);
+        bool established = false;
+        if (it != m_addrIndex.end()) {
+            auto sit = m_sessions.find(it->second);
+            established = sit != m_sessions.end() && sit->second.established;
+        }
+        if (!established)
+            logPacketHeader("audio", from, n, buf);
+
+        std::lock_guard<std::mutex> lk(m_mtx);
+        it = m_addrIndex.find(key);
 
         if (it != m_addrIndex.end()) {
             auto sit = m_sessions.find(it->second);
@@ -145,35 +169,50 @@ void Relay::audioLoop()
 
 void Relay::handleHandshake(const uint8_t* buf, int len, const sockaddr_in& from)
 {
-    if (len < (int)sizeof(HandshakeReq)) return;
-    if ((PktType)buf[0] != PktType::Handshake) return;
+    if (len < (int)sizeof(HandshakeReq)) {
+        std::cout << "[relay][handshake] DROP: packet too short len=" << len
+                  << " expected>=" << sizeof(HandshakeReq) << "\n";
+        return;
+    }
+    if ((PktType)buf[0] != PktType::Handshake) {
+        std::cout << "[relay][handshake] DROP: unexpected type=0x"
+                  << std::hex << (unsigned)buf[0] << std::dec
+                  << " len=" << len << "\n";
+        return;
+    }
 
-    std::cout << "[relay] handshake received from="
+    std::cout << "[relay][handshake] RX from="
               << inet_ntoa(from.sin_addr) << ":" << ntohs(from.sin_port)
               << " len=" << len
               << " pending=" << m_pending.size() << "\n";
 
     HandshakeReq req; std::memcpy(&req, buf, sizeof(req));
     if (req.verMajor != PROTOCOL_VERSION_MAJOR) {
-        std::cout << "[relay] handshake rejected: version "
+        std::cout << "[relay][handshake] REJECT version "
                   << (unsigned)req.verMajor << "." << (unsigned)req.verMinor
                   << " expected major=" << (unsigned)PROTOCOL_VERSION_MAJOR << "\n";
         HandshakeNak nak{ (uint8_t)PktType::HandshakeNak, 2 };
-        m_audio.sendTo(&nak, sizeof(nak), from); return;
+        int sent = m_audio.sendTo(&nak, sizeof(nak), from);
+        std::cout << "[relay][handshake] NAK sent=" << sent
+                  << "/" << sizeof(nak) << " reason=version\n";
+        return;
     }
 
     if ((int)m_sessions.size() >= m_cfg.maxPlayers) {
-        std::cout << "[relay] handshake rejected: server full sessions="
+        std::cout << "[relay][handshake] REJECT server full sessions="
                   << m_sessions.size() << " max=" << m_cfg.maxPlayers << "\n";
         HandshakeNak nak{ (uint8_t)PktType::HandshakeNak, 3 };
-        m_audio.sendTo(&nak, sizeof(nak), from); return;
+        int sent = m_audio.sendTo(&nak, sizeof(nak), from);
+        std::cout << "[relay][handshake] NAK sent=" << sent
+                  << "/" << sizeof(nak) << " reason=full\n";
+        return;
     }
 
     time_t now = time(nullptr);
     int found = -1;
     for (size_t i = 0; i < m_pending.size(); ++i) {
         if (m_pending[i].expiresUnix < (uint32_t)now) {
-            std::cout << "[relay] pending token expired player="
+            std::cout << "[relay][token] EXPIRED player="
                       << m_pending[i].playerId
                       << " expires=" << m_pending[i].expiresUnix
                       << " now=" << (uint32_t)now << "\n";
@@ -185,23 +224,31 @@ void Relay::handleHandshake(const uint8_t* buf, int len, const sockaddr_in& from
     }
 
     if (found < 0) {
-        std::cout << "[relay] handshake rejected: TOKEN NOT FOUND/EXPIRED"
+        std::cout << "[relay][handshake] REJECT TOKEN NOT FOUND/EXPIRED"
                   << " pending=" << m_pending.size()
                   << " now=" << (uint32_t)now << "\n";
         HandshakeNak nak{ (uint8_t)PktType::HandshakeNak, 0 };
-        m_audio.sendTo(&nak, sizeof(nak), from); return;
+        int sent = m_audio.sendTo(&nak, sizeof(nak), from);
+        std::cout << "[relay][handshake] NAK sent=" << sent
+                  << "/" << sizeof(nak) << " reason=token\n";
+        return;
     }
 
-    std::cout << "[relay] token match player=" << m_pending[found].playerId
+    std::cout << "[relay][token] MATCH player=" << m_pending[found].playerId
               << " pending_index=" << found << "\n";
 
     bool fromLoopback = (ntohl(from.sin_addr.s_addr) >> 24) == 127;
     if (m_cfg.ipSecondaryCheck && m_pending[found].expectedIp != 0 && !fromLoopback &&
         from.sin_addr.s_addr != m_pending[found].expectedIp) {
-        std::cout << "[relay] handshake IP mismatch for player "
-                  << m_pending[found].playerId << " — rejected\n";
+        std::cout << "[relay][handshake] REJECT IP mismatch player="
+                  << m_pending[found].playerId
+                  << " expected_ip=" << m_pending[found].expectedIp
+                  << " actual_ip=" << from.sin_addr.s_addr << "\n";
         HandshakeNak nak{ (uint8_t)PktType::HandshakeNak, 0 };
-        m_audio.sendTo(&nak, sizeof(nak), from); return;
+        int sent = m_audio.sendTo(&nak, sizeof(nak), from);
+        std::cout << "[relay][handshake] NAK sent=" << sent
+                  << "/" << sizeof(nak) << " reason=ip\n";
+        return;
     }
 
     uint16_t pid = m_pending[found].playerId;
@@ -212,9 +259,12 @@ void Relay::handleHandshake(const uint8_t* buf, int len, const sockaddr_in& from
     s.self = crypto::generateKeyPair();
     crypto::PubKey clientPk; std::memcpy(clientPk.data(), req.clientPubKey, 32);
     if (!crypto::deriveSession(s.self, clientPk, /*isClient=*/false, s.keys)) {
-        std::cout << "[relay] handshake rejected: deriveSession FAILED player=" << pid << "\n";
+        std::cout << "[relay][handshake] REJECT deriveSession FAILED player=" << pid << "\n";
         HandshakeNak nak{ (uint8_t)PktType::HandshakeNak, 0 };
-        m_audio.sendTo(&nak, sizeof(nak), from); return;
+        int sent = m_audio.sendTo(&nak, sizeof(nak), from);
+        std::cout << "[relay][handshake] NAK sent=" << sent
+                  << "/" << sizeof(nak) << " reason=derive\n";
+        return;
     }
     s.established = true;
 
@@ -230,8 +280,13 @@ void Relay::handleHandshake(const uint8_t* buf, int len, const sockaddr_in& from
     ack.maxRange             = m_engine->tuning().shout;
     ack.opusBitrate          = (uint16_t)m_engine->bus().behavior().bitrate;
     ack.maxConcurrentStreams = m_engine->policy().maxStreams;
-    m_audio.sendTo(&ack, sizeof(ack), from);
+    int sent = m_audio.sendTo(&ack, sizeof(ack), from);
 
+    std::cout << "[relay][handshake] ACK sent=" << sent
+              << "/" << sizeof(ack)
+              << " player=" << pid
+              << " -> " << inet_ntoa(from.sin_addr) << ":" << ntohs(from.sin_port)
+              << "\n";
     std::cout << "[relay] player " << pid << " authenticated (token ok)\n";
 
     for (auto& kv : m_names)
