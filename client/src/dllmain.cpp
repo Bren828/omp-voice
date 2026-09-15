@@ -1,16 +1,6 @@
 // ============================================================
 //  VoiceChat client (.asi) — entry point / orchestration
 //  File: client/src/dllmain.cpp
-//
-//  Injected into GTA SA. On attach it spins a worker thread that:
-//   1. loads voicechat.ini (local prefs),
-//   2. starts WASAPI playback + capture (Opus),
-//   3. starts the secure VoiceClient (token handshake + AEAD + reconnect),
-//   4. wires relay->playback and capture->relay,
-//   5. polls the PTT / mute keys.
-//
-//  Identity is the token delivered by the .dll (TokenInbox) — no SA-MP memory
-//  reading. If the relay is down the game runs fine, just no voice (req. J7).
 // ============================================================
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -196,11 +186,6 @@ static void run()
     g_cfg = ClientConfig::load("voicechat.ini");
     printf("[VoiceChat v2] ClientConfig::load done\n");
     printf("[VoiceChat v2] relay=%s:%d cmd=%d\n", g_cfg.relayIp.c_str(), g_cfg.audioPort, g_cfg.cmdPort);
-#ifdef VC_CLIENT_GUI
-    printf("[gui] panel_key=%d (0x%02X)\n", g_cfg.panelKey, (unsigned)(g_cfg.panelKey & 0xFF));
-#else
-    printf("[gui] control panel build is DISABLED (VC_CLIENT_GUI not defined)\n");
-#endif
 
     printf("[audio] playback init begin\n");
     g_playback.init(g_cfg.masterVolume, g_cfg.proximityVolume, g_cfg.radioVolume);
@@ -264,8 +249,7 @@ static void run()
         if (panelNow && !lastPanel) {
             d3d9::togglePanel();
             printf("[gui] panel key pressed: vk=%d installed=%d open=%d\n",
-                   g_cfg.panelKey, d3d9::installed() ? 1 : 0,
-                   d3d9::panelOpen() ? 1 : 0);
+                   g_cfg.panelKey, d3d9::installed() ? 1 : 0, d3d9::panelOpen() ? 1 : 0);
         }
         lastPanel = panelNow;
 
@@ -340,8 +324,9 @@ BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID)
         d3d9::shutdown();
 #endif
         g_voice.stop();
-        g_capture.stop();
-        g_playback.stop();
+        // AudioCapture/AudioPlayback expose shutdown(), not stop().
+        g_capture.shutdown();
+        g_playback.shutdown();
         overlay::shutdown();
         if (g_thread) {
             WaitForSingleObject(g_thread, 1000);
