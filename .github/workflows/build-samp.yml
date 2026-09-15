@@ -49,8 +49,8 @@ jobs:
         run: |
           cmake -S . -B build-samp \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_FLAGS=-m32 \
-            -DCMAKE_CXX_FLAGS=-m32 \
+            -DCMAKE_C_FLAGS="-m32" \
+            -DCMAKE_CXX_FLAGS="-m32 -DLINUX -include cstddef" \
             -DVC_BUILD_SAMP=ON \
             -DVC_BUILD_OMP=OFF \
             -DVC_BUILD_RELAY=OFF \
