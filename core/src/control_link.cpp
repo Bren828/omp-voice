@@ -6,6 +6,7 @@
 #include "../../shared/protocol.h"
 #include <ctime>
 #include <cstring>
+#include <cstdio>
 
 namespace vc::core {
 
@@ -13,6 +14,8 @@ bool ControlLink::init(const char* relayIp, uint16_t controlPort)
 {
     if (!m_sock.open()) return false;
     m_relay = UdpSocket::addr(relayIp, controlPort);
+    std::printf("[control] init relay=%s:%u socket=%s\n", relayIp,
+                (unsigned)controlPort, m_sock.valid() ? "OK" : "INVALID");
     // Poll-with-timeout so the status thread can observe the shutdown flag.
     m_sock.setRecvTimeout(200);
     m_statusRun = true;
@@ -57,11 +60,20 @@ bool ControlLink::nextStatus(StatusEvent& out)
 template<typename T>
 void ControlLink::send(const T& pkt)
 {
-    if (m_sock.valid()) m_sock.sendTo(&pkt, (int)sizeof(pkt), m_relay);
+    if (!m_sock.valid()) {
+        std::printf("[control] send skipped: socket INVALID size=%zu\n", sizeof(pkt));
+        return;
+    }
+    int sent = m_sock.sendTo(&pkt, (int)sizeof(pkt), m_relay);
+    std::printf("[control] send type=%u size=%zu result=%d expected=%zu\n",
+                (unsigned)((const uint8_t*)&pkt)[0], sizeof(pkt), sent, sizeof(pkt));
 }
 
 void ControlLink::onPlayerConnect(uint16_t playerId, uint32_t ip, uint32_t ttlSeconds)
 {
+    std::printf("[control] onPlayerConnect player=%u ip=0x%08X ttl=%u\n",
+                (unsigned)playerId, (unsigned)ip, (unsigned)ttlSeconds);
+
     crypto::Token tok;
     crypto::mintToken(tok);                       // req. A1 fresh per connect
 
@@ -71,9 +83,18 @@ void ControlLink::onPlayerConnect(uint16_t playerId, uint32_t ip, uint32_t ttlSe
     std::memcpy(b.token, tok.data(), TOKEN_BYTES);
     b.expiresUnix = (uint32_t)time(nullptr) + ttlSeconds;
     b.ip = ip;                                    // req. A: IP secondary check
+
+    std::printf("[control] CtrlBindToken player=%u expires=%u ip=0x%08X -> relay\n",
+                (unsigned)b.playerId, (unsigned)b.expiresUnix, (unsigned)b.ip);
     send(b);
 
-    if (m_deliver) m_deliver(playerId, tok);      // ship to client (game chan)
+    if (m_deliver) {
+        std::printf("[control] deliver token player=%u -> game client\n",
+                    (unsigned)playerId);
+        m_deliver(playerId, tok);                 // ship to client (game chan)
+    } else {
+        std::printf("[control] !!! token deliver callback is NOT SET !!!\n");
+    }
 
     m_reg.player(playerId);                       // ensure bookkeeping entry
 }
@@ -153,7 +174,7 @@ void ControlLink::setPlayerName(uint16_t playerId, const char* name)
     CtrlPlayerName p{};
     p.type = (uint8_t)PktType::CtrlPlayerName;
     p.playerId = playerId;
-    if (name) {                                   // copy, always null-terminated
+    if (name) {
         std::strncpy(p.name, name, MAX_NAME_LEN - 1);
         p.name[MAX_NAME_LEN - 1] = '\0';
     }
@@ -212,7 +233,7 @@ void ControlLink::setChannelPriority(uint16_t cid, uint8_t prio)
 
 void ControlLink::onPlayerDisconnect(uint16_t playerId)
 {
-    m_reg.removeFromAllChannels(playerId);        // req. I1
+    m_reg.removeFromAllChannels(playerId);
     m_reg.removePlayer(playerId);
     send(chanOp(PktType::CtrlPlayerGone, INVALID_CHANNEL, playerId, 0));
 }
