@@ -4,6 +4,7 @@
 // ============================================================
 #include "../include/net_session.h"
 #include <chrono>
+#include <cstdio>
 
 namespace vc::client {
 
@@ -54,9 +55,24 @@ bool TokenInbox::latest(crypto::Token& out, uint16_t& pid)
 bool Session::connect(const char* relayIp, uint16_t audioPort,
                       const crypto::Token& token)
 {
-    if (!m_sock.valid()) { if (!m_sock.open()) return false; }
+    if (!m_sock.valid()) {
+        std::printf("[net] socket open begin\n");
+        if (!m_sock.open()) {
+            std::printf("[net] !!! socket open FAILED !!!\n");
+            return false;
+        }
+        std::printf("[net] socket open OK\n");
+    }
+
     m_sock.setRecvTimeout(200);
     m_server = UdpSocket::addr(relayIp, audioPort);
+
+    char relayAddr[INET_ADDRSTRLEN]{};
+    if (m_server.sin_family == AF_INET) {
+        inet_ntop(AF_INET, &m_server.sin_addr, relayAddr, sizeof(relayAddr));
+    }
+    std::printf("[net] handshake target=%s:%u\n", relayAddr[0] ? relayAddr : "?",
+                (unsigned)ntohs(m_server.sin_port));
 
     m_self = crypto::generateKeyPair();
     // Fresh ephemeral key => fresh AEAD session; restart the nonce counter so
@@ -71,21 +87,45 @@ bool Session::connect(const char* relayIp, uint16_t audioPort,
     std::memcpy(req.token, token.data(), TOKEN_BYTES);
     std::memcpy(req.clientPubKey, m_self.pk.data(), 32);
 
+    std::printf("[net] handshake packet type=%u ver=%u.%u size=%zu\n",
+                (unsigned)req.type, (unsigned)req.verMajor, (unsigned)req.verMinor,
+                sizeof(req));
+
     m_run = true;
     m_established = false;
     m_nak = false;
     // Reuse the recv thread/socket across reconnects: it already watches for
     // the handshake reply when !established, so we just (re)send the request.
-    if (!m_recv.joinable())
+    if (!m_recv.joinable()) {
+        std::printf("[net] recv thread start\n");
         m_recv = std::thread([this] { recvLoop(); });
-    m_sock.sendTo(&req, sizeof(req), m_server);   // CLEARTEXT (token is secret)
+    }
+
+    int sent = m_sock.sendTo(&req, sizeof(req), m_server);
+    std::printf("[net] handshake sendTo result=%d expected=%zu\n", sent, sizeof(req));
+    if (sent != (int)sizeof(req)) {
+        std::printf("[net] !!! handshake UDP SEND FAILED !!!\n");
+        return false;
+    }
 
     // Wait briefly for the ack — or bail early if the relay NAKs (e.g. a stale
     // token during reconnect), so the manager can retry with a fresh one.
     uint32_t start = nowMs();
     while (!m_established && !m_nak && nowMs() - start < 2000)
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    return m_established.load();
+
+    if (m_established.load()) {
+        std::printf("[net] handshake completed: ACK received player=%u\n",
+                    (unsigned)m_limits.playerId);
+        return true;
+    }
+    if (m_nak.load()) {
+        std::printf("[net] handshake completed: NAK received\n");
+        return false;
+    }
+
+    std::printf("[net] handshake timeout: no ACK/NAK within 2000 ms\n");
+    return false;
 }
 
 void Session::disconnect()
@@ -128,17 +168,24 @@ void Session::recvLoop()
         m_lastRx = nowMs();
 
         if (!m_established) {
-            // A reject (bad/expired/stale token, version, full) -> let connect()
-            // return fast so the manager retries with a fresh token.
             if (n >= (int)sizeof(HandshakeNak) &&
                 (PktType)buf[0] == PktType::HandshakeNak) {
+                HandshakeNak nak{};
+                std::memcpy(&nak, buf, sizeof(nak));
+                std::printf("[net] received HANDSHAKE NAK size=%d\n", n);
                 m_nak = true;
                 continue;
             }
-            // Expect a cleartext handshake reply.
+
             if (n >= (int)sizeof(HandshakeAck) &&
                 (PktType)buf[0] == PktType::HandshakeAck) {
                 HandshakeAck ack; std::memcpy(&ack, buf, sizeof(ack));
+                char fromAddr[INET_ADDRSTRLEN]{};
+                if (from.sin_family == AF_INET)
+                    inet_ntop(AF_INET, &from.sin_addr, fromAddr, sizeof(fromAddr));
+                std::printf("[net] received HANDSHAKE ACK size=%d from=%s:%u player=%u\n",
+                            n, fromAddr[0] ? fromAddr : "?", (unsigned)ntohs(from.sin_port),
+                            (unsigned)ack.playerId);
                 crypto::PubKey relayPk; std::memcpy(relayPk.data(), ack.relayPubKey, 32);
                 if (crypto::deriveSession(m_self, relayPk, /*isClient=*/true, m_keys)) {
                     m_limits.playerId    = ack.playerId;
@@ -149,8 +196,15 @@ void Session::recvLoop()
                     m_limits.maxStreams  = ack.maxConcurrentStreams;
                     m_rxLastSeen = 0;
                     m_established = true;
+                    std::printf("[net] session keys derived OK\n");
+                } else {
+                    std::printf("[net] !!! session key derivation FAILED !!!\n");
                 }
+                continue;
             }
+
+            std::printf("[net] received unexpected handshake packet size=%d type=%u\n",
+                        n, (unsigned)buf[0]);
             continue;
         }
 
