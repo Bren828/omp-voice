@@ -1,0 +1,86 @@
+name: build-samp
+
+# Separate SA-MP 0.3.7 Linux x86 build.
+# This workflow intentionally does NOT build open.mp or the relay.
+# SA-MP's Linux server is 32-bit, so VoiceChat.so must be ELF i386.
+
+on:
+  push:
+    branches: [ Test ]
+    paths:
+      - 'samp/**'
+      - 'core/**'
+      - 'shared/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/build-samp.yml'
+  pull_request:
+    branches: [ Test ]
+    paths:
+      - 'samp/**'
+      - 'core/**'
+      - 'shared/**'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/build-samp.yml'
+  workflow_dispatch:
+
+jobs:
+  linux-x86:
+    name: SA-MP Linux x86 (32-bit)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install 32-bit toolchain
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            gcc-multilib \
+            g++-multilib \
+            libc6-dev-i386
+
+      - name: Configure SA-MP x86
+        run: |
+          cmake -S . -B build-samp \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_FLAGS=-m32 \
+            -DCMAKE_CXX_FLAGS=-m32 \
+            -DVC_BUILD_SAMP=ON \
+            -DVC_BUILD_OMP=OFF \
+            -DVC_BUILD_RELAY=OFF \
+            -DVC_BUILD_CLIENT=OFF \
+            -DVC_BUILD_TESTS=OFF \
+            -DVC_SAMP_M32=ON \
+            -DVC_WITH_OPUS=OFF \
+            -DVC_NO_SODIUM=OFF \
+            -DVC_SODIUM_FETCH=ON
+
+      - name: Build VoiceChat.so
+        run: |
+          cmake --build build-samp --target VoiceChatSamp --config Release --parallel
+
+      - name: Verify ELF architecture
+        run: |
+          file build-samp/samp/VoiceChat.so
+          readelf -h build-samp/samp/VoiceChat.so | grep -E 'Class:|Machine:'
+          test "$(file -b build-samp/samp/VoiceChat.so | grep -o 'ELF 32-bit' | head -1)" = "ELF 32-bit"
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p artifact/plugins
+          cp build-samp/samp/VoiceChat.so artifact/plugins/VoiceChat.so
+          cp samp/include/voicechat.inc artifact/voicechat.inc
+
+      - name: Upload SA-MP plugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceChat-SAMP-Linux-x86
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 14
