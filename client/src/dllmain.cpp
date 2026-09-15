@@ -111,7 +111,6 @@ static void wirePanel()
 }
 #endif
 
-// Redirect printf to a log next to the .asi (clients have no console).
 static void setupLog(HMODULE mod)
 {
     char path[MAX_PATH];
@@ -123,8 +122,6 @@ static void setupLog(HMODULE mod)
     freopen_s(&f, path, "a", stderr);
 }
 
-// Dump immutable information about the host executable. This lets us identify
-// the exact GTA build (R1/R3/etc.) from VoiceChat.log without reading GTA memory.
 static void logGameInfo()
 {
     HMODULE game = GetModuleHandleA(nullptr);
@@ -156,9 +153,6 @@ static void logGameInfo()
 }
 
 #ifdef VC_CLIENT_GUI
-// d3d9::install() is the first code that actively hooks the GTA rendering/input
-// path. Keep an SEH boundary around it so an access violation here is recorded
-// in VoiceChat.log instead of leaving us with only a silent game crash.
 static bool installD3D9WithDiagnostics()
 {
     printf("[gui] ===== D3D9 install begin =====\n");
@@ -185,15 +179,22 @@ static void run()
     Sleep(3000);
     printf("[VoiceChat v2] startup delay done\n");
 
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    printf("[VoiceChat v2] COM initialized\n");
+    printf("[VoiceChat v2] CoInitializeEx begin\n");
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    printf("[VoiceChat v2] CoInitializeEx done hr=0x%08lX\n", (unsigned long)coHr);
+
+    printf("[VoiceChat v2] crypto::init begin\n");
     crypto::init();
-    printf("[VoiceChat v2] crypto initialized\n");
+    printf("[VoiceChat v2] crypto::init done\n");
 
     printf("[VoiceChat v2] worker started\n");
+    printf("[VoiceChat v2] logGameInfo begin\n");
     logGameInfo();
+    printf("[VoiceChat v2] logGameInfo done\n");
 
+    printf("[VoiceChat v2] ClientConfig::load begin\n");
     g_cfg = ClientConfig::load("voicechat.ini");
+    printf("[VoiceChat v2] ClientConfig::load done\n");
     printf("[VoiceChat v2] relay=%s:%d cmd=%d\n", g_cfg.relayIp.c_str(), g_cfg.audioPort, g_cfg.cmdPort);
 
     printf("[audio] playback init begin\n");
@@ -216,11 +217,11 @@ static void run()
     PlaybackHooks hooks;
     hooks.onProximity = [](uint16_t sp, uint16_t seq, uint8_t fl, float vol, float pan,
                            const uint8_t* op, uint16_t len) {
-        overlay::noteSpeaker(sp, /*isBus=*/false);
+        overlay::noteSpeaker(sp, false);
         g_playback.pushProximity(sp, seq, fl, vol, pan, op, len); };
     hooks.onBus = [](uint16_t ch, uint8_t filt, uint16_t seq, float vol,
                      const uint8_t* op, uint16_t len) {
-        overlay::noteSpeaker(ch, /*isBus=*/true);
+        overlay::noteSpeaker(ch, true);
         g_playback.pushBus(ch, filt, seq, vol, op, len); };
     hooks.onGone = [](uint16_t sp) {
         overlay::removeSpeaker(sp);
