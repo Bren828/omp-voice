@@ -152,9 +152,10 @@ static bool installD3D9WithDiagnostics()
         printf("[gui] d3d9::install returned %s\n", result ? "SUCCESS" : "FAIL");
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {
-        printf("[gui] !!! d3d9::install SEH exception: code=0x%08lX address=%p !!!\n",
-               (unsigned long)GetExceptionCode(),
-               GetExceptionInformation()->ExceptionRecord->ExceptionAddress);
+        // MSVC does not allow GetExceptionInformation() here in a nested
+        // expression/context. Keep the SEH diagnostic portable and simple.
+        printf("[gui] !!! D3D9 install SEH exception: code=0x%08lX !!!\n",
+               (unsigned long)GetExceptionCode());
         result = false;
     }
     printf("[gui] ===== D3D9 install end =====\n");
@@ -324,7 +325,6 @@ BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID)
         d3d9::shutdown();
 #endif
         g_voice.stop();
-        // AudioCapture/AudioPlayback expose shutdown(), not stop().
         g_capture.shutdown();
         g_playback.shutdown();
         overlay::shutdown();
