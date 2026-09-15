@@ -21,7 +21,7 @@ jobs:
           -DVC_BUILD_RELAY=OFF
           -DVC_BUILD_OMP=OFF
           -DVC_BUILD_TESTS=OFF
-          -DVC_CLIENT_GUI=OFF
+          -DVC_CLIENT_GUI=ON
           -DVC_WITH_RNNOISE=ON
 
       - name: Build client (Release)
