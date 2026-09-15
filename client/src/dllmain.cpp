@@ -180,9 +180,15 @@ static bool installD3D9WithDiagnostics()
 
 static void run()
 {
+    printf("[VoiceChat v2] worker thread entered\n");
+    printf("[VoiceChat v2] startup delay begin\n");
     Sleep(3000);
+    printf("[VoiceChat v2] startup delay done\n");
+
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    printf("[VoiceChat v2] COM initialized\n");
     crypto::init();
+    printf("[VoiceChat v2] crypto initialized\n");
 
     printf("[VoiceChat v2] worker started\n");
     logGameInfo();
@@ -299,8 +305,23 @@ BOOL APIENTRY DllMain(HMODULE mod, DWORD reason, LPVOID)
         setupLog(mod);
         printf("[VoiceChat v2] DllMain attach\n");
         g_run = true;
+
+        SetLastError(ERROR_SUCCESS);
         g_thread = CreateThread(nullptr, 0,
-            [](LPVOID) -> DWORD { run(); return 0; }, nullptr, 0, nullptr);
+            [](LPVOID) -> DWORD {
+                printf("[VoiceChat v2] worker entry callback\n");
+                run();
+                printf("[VoiceChat v2] worker exit\n");
+                return 0;
+            }, nullptr, 0, nullptr);
+
+        if (!g_thread) {
+            DWORD err = GetLastError();
+            printf("[VoiceChat v2] !!! CreateThread FAILED: error=%lu (0x%08lX) !!!\n",
+                   (unsigned long)err, (unsigned long)err);
+        } else {
+            printf("[VoiceChat v2] CreateThread OK: handle=%p\n", (void*)g_thread);
+        }
     } else if (reason == DLL_PROCESS_DETACH) {
         if (!g_instanceMutex) return TRUE;
         g_run = false;
