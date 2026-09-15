@@ -35,7 +35,7 @@ jobs:
           -DVC_BUILD_SAMP=ON
           -DVC_BUILD_RELAY=ON
           -DVC_BUILD_TESTS=ON
-          -DVC_CLIENT_GUI=OFF
+          -DVC_CLIENT_GUI=ON
           -DVC_WITH_RNNOISE=ON
 
       - name: Build (Release)
